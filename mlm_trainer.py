@@ -5,7 +5,7 @@ from torch import cuda
 import numpy as np
 import os
 import shutil 
-os.chdir('/home/ulhaq/project/contrastive_loss')
+os.chdir('/home/ulhaq/project/cpda')
 
 from transformers import AutoTokenizer, DataCollatorForTokenClassification
 from torch.utils.data import Dataset, DataLoader
@@ -36,6 +36,8 @@ parser.add_argument('--dataset_size', type=int, required=True)
 parser.add_argument('--lr', type=float, required=True)
 parser.add_argument('--weight_decay', type=float, required=True)
 parser.add_argument('--num_epochs', type=int, required=True)
+parser.add_argument('--early_stopping_tolerance', type=int, required=True)
+parser.add_argument('--early_stopping_threshold', type=float, required=True)
 parser.add_argument('--jobname', type=str,  required=True)
 parser.add_argument('--model', type=str, required=True)
 parser.add_argument('--dataset', type=str, required=True)
@@ -47,10 +49,9 @@ args = parser.parse_args()
 
 # %%
 
-save_path = '/home/ulhaq/project/contrastive_loss/models/'
+model_save_path = '/home/ulhaq/project/cpda/models/'
 
 jobname = f'{args.jobname}'
-print(args.logger)
 
 if args.logger=='True':
     wandb.init(
@@ -59,7 +60,10 @@ if args.logger=='True':
     )
 
 device = 'cuda' if cuda.is_available() else "cpu"
-print(device)
+print('Running on ...', device)
+print('Lamda .... ', args.lamda)
+print('Logging....', args.logger)
+##### Set seed for reproducibility
 
 def set_seed(seed):
     torch.manual_seed(seed)
@@ -70,107 +74,39 @@ def set_seed(seed):
 
 set_seed(args.seed)
 
-# %% WNUT 17 dataset]
+###### Load Dataset ############
+
 dataset = load_dataset(args.dataset)
+
 if args.shuffle_seed is not 0:
     dataset = dataset.shuffle(seed=args.shuffle_seed)
-dataset_org = dataset.filter(lambda e, i: i<args.dataset_size, with_indices=True)
-label_list = dataset['train'].features['ner_tags'].feature.names
+dataset = dataset.filter(lambda e, i: i<args.dataset_size, with_indices=True)
 
+label_list = dataset['train'].features['ner_tags'].feature.names
 label2id = {tag: id for id, tag in enumerate(label_list)}     
 id2label =  {id: tag for tag, id in label2id.items()}
-label_names = label_list.copy()
-entities = [x[2:] for x in label_names[1:]]
+entities = [x[2:] for x in label_list[1:]]
 entities = sorted(set(entities), key=entities.index)
 prompt = [f'<{x}>' for x in entities]
 print(prompt)
 
-def process(examples):
-    tokens, ner_tags = examples['tokens'], examples['ner_tags']
-    labels = [id2label[x] for x in ner_tags]
-    tagged_sent = tokens.copy()
-    tokens_org = []
-    ner_tags_org = []
-    masked_ner_tags_org = []
-    labels_org = []
-    tagged_sent_org = []
-    masked_tokens_org = []
 
-    for idx, (s, l) in enumerate(zip(tokens, labels)):
-        if l != 'O':
-            tagged_sent[idx] = f'<{l[2:]}>'
-            
-    special_tokens = [x for x in tagged_sent if x in prompt]
-    special_tokens = sorted(set(special_tokens), key=special_tokens.index)
-    tokens_org_ = []
-    if special_tokens == []:
-        tokens_org.append(tokens)
-        ner_tags_org.append(ner_tags)
-        masked_ner_tags_org.append(ner_tags) ### If there are no tags maskedsent==tagged_sent
-        
-    for special_token in special_tokens:
-        
-        ##### Masked Sentences #####
-        masked_tokens_temp = [tokenizer.mask_token if token in special_token else token for token in tagged_sent]
-        special_token_indexes = [i for i, token in enumerate(masked_tokens_temp) if token == tokenizer.mask_token]
-        ########################
-        
-        _masked_ner_tags = [tag if idx in special_token_indexes else 0 for idx, tag in enumerate(ner_tags)]
-        _masked_ner_tags = [-100] + _masked_ner_tags
-        masked_ner_tags_org.append(_masked_ner_tags)
+# Define TOKENIZER
 
-        _ner_tags_org = [-100] + ner_tags
-        ner_tags_org.append(_ner_tags_org)
-        
-        tokens_temp = [special_token] + tokens
-        tokens_org.append(tokens_temp)
-        
-    examples['tokens']  = tokens_org
-    examples['ner_tags']  = ner_tags_org
-    examples['masked_ner_tags']  = masked_ner_tags_org
-
-    return examples
-
-dataset = dataset_org.map(process)
-
-# %%
-
-def dataset_process(dataset):
-   
-    dataset_entity = {}
-
-    for item in dataset:
-        tokens = []
-        masked_ner_tags = []
-        ner_tags = []
-        masked_sentences = []
-        tagged_sentences = []
-        for token, tag, masked_ner_tag in zip(dataset[f'{item}']['tokens'], dataset[f'{item}']['ner_tags'], dataset[f'{item}']['masked_ner_tags']):
-            tokens.extend(token)
-            ner_tags.extend(tag)
-            masked_ner_tags.extend(masked_ner_tag)
-
-        dataset_new_tokens = pd.DataFrame({"tokens": tokens, "ner_tags": ner_tags, "masked_ner_tags":masked_ner_tags})
-        dataset_new_tokens = Dataset.from_pandas(dataset_new_tokens)
-        dataset_entity.update({f'{item}': dataset_new_tokens
-                })
-        
-    dataset_dict = DatasetDict({
-        'train': dataset_entity['train'],
-        'validation':  dataset_entity['validation'],
-        'test': dataset_entity['test'],
-            })
-        
-    return dataset_dict
-
-dataset = dataset_process(dataset)
-print(dataset)
-# %%
-
-prompt_mapping = {}
 checkpoint = args.model
 tokenizer = AutoTokenizer.from_pretrained(checkpoint, add_prefix_space=True)
 tokenizer.add_tokens(prompt)       
+
+# Load DATASET
+dataset_processor = DatasetProcessor(dataset)
+dataset = dataset.map(dataset_processor.add_prompt, fn_kwargs={'id2label': id2label, 'prompt': prompt, 'tokenizer': tokenizer})
+dataset = DatasetProcessor.dataset_extend(dataset)
+
+print('Dataset', dataset)
+# %%
+
+# Define MODEL
+prompt_mapping = {}
 encodings = []
 for entity in prompt:
     entity_encoding = tokenizer.encode(entity, add_special_tokens=False)
@@ -188,63 +124,14 @@ for idx, entity in enumerate(prompt,-len(prompt)):
         model.roberta.embeddings.word_embeddings.weight[idx, :] += model.roberta.embeddings.word_embeddings.weight[entity_encoding[0], :].clone()    
 model.to(device)
 
-def tokenize_and_align_labels(examples):
-    tokenized_inputs = tokenizer(
-        examples["tokens"], max_length=128, truncation=True, is_split_into_words=True, padding='max_length')
-    
-    labels = []
-    masked_input_ids = []
-    masked_labels = []
-    tagged_sent = []
-    attn_mask = []
-    label_input_ids= []
-    for i, (label, tokens, masked_ner_tag) in enumerate(zip(examples[f"ner_tags"], examples['tokens'], examples['masked_ner_tags'])):
-        # Map tokens to their respective word.
-        word_ids = tokenized_inputs.word_ids(batch_index=i)
-        input_ids = torch.tensor(tokenized_inputs.input_ids[i])
-        previous_word_idx = None
-        label_ids = []
-        masked_label_ids = []
-        for word_idx in word_ids:  # Set the special tokens to -100.
-            if word_idx is None:
-                label_ids.append(-100)
-                masked_label_ids.append(-100)
-            # Only label the first token of a given word.
-            elif word_idx != previous_word_idx:
-                label_ids.append(label[word_idx])
-                masked_label_ids.append(masked_ner_tag[word_idx])
-            else:
-                label_ids.append(0)
-                masked_label_ids.append(0)
-            previous_word_idx = word_idx
-                   
-        label_ids = torch.tensor(label_ids)
-        labels.append(label_ids)
-        
-        masked_label_ids = torch.tensor(masked_label_ids)
-        
-        mask = (masked_label_ids != -100) & (masked_label_ids != 0)
-        masked_id = [tokenizer.mask_token_id if m else i.item() for i, m in zip(input_ids, mask)]
-        masked_input_ids.append(masked_id) 
-        masked_labels.append(masked_label_ids)
 
-        tags = [f'<{id2label[x.item()][2:]}>' if x != -100 and x != 0 else "O" for x in label_ids]
-        tagged_sent_temp = [prompt_mapping[word] if word in prompt_mapping else 0 for word in tags]
-        tagged_sent.append(tagged_sent_temp)
-                
-    tokenized_inputs["masked_input_ids"] = torch.tensor(masked_input_ids)
-    tokenized_inputs["tagged_sent"] = torch.tensor(tagged_sent)
-    
-    return tokenized_inputs
-
-# %%
-
-tokenized = dataset.map(tokenize_and_align_labels, batched=True)
+# TOKENIZE Data
+tokenized = dataset.map(tokenize_and_align_labels, fn_kwargs={'id2label': id2label, 'prompt_mapping': prompt_mapping, 'tokenizer': tokenizer},  batched=True,)
 tokenized.set_format('torch', columns=[
                      "input_ids", "attention_mask", "masked_input_ids", "tagged_sent"])
 # %%
-
 data_collator = DataCollatorForTokenClassification(tokenizer=tokenizer)
+
 
 train_dataloader = DataLoader(
     tokenized['train'],
@@ -271,7 +158,7 @@ lr_scheduler = get_scheduler(
 )
 
 metric = evaluate.load("seqeval")
-early_stopping = EarlyStopping(tolerance=10, min_delta=0.03)
+early_stopping = EarlyStopping(tolerance=args.early_stopping_tolerance, min_delta=args.early_stopping_threshold)
 
 # %%
 
@@ -359,7 +246,7 @@ for epoch in range(num_train_epochs):
     early_stopping(train_loss, val_loss)
     if val_loss.item() < previous_loss:
        print(f'saving best model at epoch {epoch}')
-       model.save_pretrained(save_path + f'/{args.project}' + f'/{jobname}' + f'/model_best')
+       model.save_pretrained(model_save_path + f'/{args.project}' + f'/{jobname}' + f'/model_best')
     previous_loss = val_loss.item()
 
     if early_stopping.early_stop:
