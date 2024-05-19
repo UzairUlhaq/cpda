@@ -2,11 +2,10 @@
 
 import torch
 import torch.nn as nn
-from transformers import AutoModel, AutoConfig, BertModel, BertPreTrainedModel, RobertaModel, RobertaPreTrainedModel
-from transformers.modeling_outputs import TokenClassifierOutput,SequenceClassifierOutput, MaskedLMOutput
-from transformers.activations import ACT2FN, gelu
+from transformers import AutoModel, AutoConfig, RobertaModel, RobertaPreTrainedModel
+from transformers.modeling_outputs import TokenClassifierOutput, MaskedLMOutput
 from typing import List, Optional, Tuple, Union
-from transformers import PreTrainedModel, PretrainedConfig, AutoModelForMaskedLM, T5EncoderModel
+from transformers import PreTrainedModel, PretrainedConfig, AutoModelForMaskedLM
 from torch.nn import functional as F
 
 # %%
@@ -49,6 +48,7 @@ class model_baseline(PreTrainedModel):
 # %%
 
 class roberta_mlm(RobertaPreTrainedModel):
+
     _tied_weights_keys = ["lm_head.decoder.weight", "lm_head.decoder.bias"]
 
     def __init__(self, config, encodings):
@@ -56,6 +56,8 @@ class roberta_mlm(RobertaPreTrainedModel):
         self.prompt = encodings   ## prompt encodings
         self.roberta = RobertaModel(config, add_pooling_layer=False)
         self.lm_head = RobertaLMHead(config)
+        self.loss =  nn.CrossEntropyLoss(ignore_index=1, reduction='mean')
+
         # Initialize weights and apply final processing
         self.post_init()
         
@@ -64,12 +66,7 @@ class roberta_mlm(RobertaPreTrainedModel):
 
     def set_output_embeddings(self, new_embeddings):
         self.lm_head.decoder = new_embeddings
-    
-    def add_loss(self, loss):           ### helper function
-        x = [x.item() for x in loss]
-        
-        return sum(x)
-        
+
     def forward(
         self,      
         input_ids: Optional[torch.LongTensor] = None,
@@ -122,58 +119,62 @@ class roberta_mlm(RobertaPreTrainedModel):
         prompts = self.prompt                                 
         # Initialize losses
         contrastive_loss = ContrastiveLoss()        
-        loss_contrastive = []
-        mlm_loss = []
-        d_pos = []
-        d_neg = []
-        positive_tokens_dict = {prompt_id: [] for prompt_id in prompts}
-        anchors_dict = {prompt_id: [] for prompt_id in prompts}
+        loss_contrastive = 0
+        mlm_loss = 0
+        d_pos = 0
+        d_neg = 0
 
         for i in range(sequence_output.shape[0]):                                         ### iterate over each sentence to get ancor, positve tokens and negative tokens to calculate loss
             sequence_normalize_parameter = sum(attention_mask[i])                         ### +ve number           
             prompt_id = input_ids[i][1].item()
+
             if prompt_id not in prompts:
-                loss_fct = nn.CrossEntropyLoss(ignore_index=1, reduction='mean')
-                mlm_loss.append(loss_fct(prediction_scores[i].view(-1, self.config.vocab_size), labels[i].view(-1)))
+                mlm_loss += self.loss(prediction_scores[i].view(-1, self.config.vocab_size), labels[i].view(-1))
                 continue  
 
             anchor = sequence_output[i][input_ids[i].eq(prompt_id)]                   ### [1, E]
             positive_tokens_mask = (tagged[i] == prompt_id) 
             positive_tokens_mask_expanded = positive_tokens_mask.unsqueeze(-1).expand_as(sequence_output[i])         ### [1, N, E]         
             positive_tokens = sequence_output[i][positive_tokens_mask_expanded].view(-1, 768)    ### [Np, E] #Get tokens belonging to positive class
-
             negative_anchors = list(set(prompts)-set([prompt_id]))                    ### select one placeholder at time to calculate loss
 
-            anchors_dict[prompt_id].append(anchor.cpu().detach().numpy())
-
-            if not positive_tokens.nelement() == 0:
-                positive_tokens_dict[prompt_id].append(positive_tokens.cpu().detach().numpy())
-
-            for p in negative_anchors:                                                ### iterate over placeholders belonging to negative classes
-                negative_tokens_mask = (tagged[i] == p)                               ### Generate mask for negative placeholder 
+            if len(self.prompt)==1:
+                negative_tokens_mask = (tagged[i] != prompt_id)                               ### Generate mask for negative placeholder 
                 negative_tokens_mask_expanded = negative_tokens_mask.unsqueeze(-1).expand_as(sequence_output[i])      
                 negative_tokens = sequence_output[i][negative_tokens_mask_expanded].view(-1, 768)    ### [Ne, E] #Get tokens belonging to negtive class
-                sequence_normalize_parameter = sum(attention_mask[i])                                ### +ve number
-
+                entity_length = positive_tokens.shape[0]  ### high == max entity length
+                start_index = torch.randint(low=0, high=negative_tokens.shape[0]-entity_length, size=(1,1)).item()
+                end_index = start_index + entity_length 
+                negative_tokens = negative_tokens[start_index:end_index]
                 if negative_tokens.shape[0] != 0 and positive_tokens.shape[0] != 0:
                     loss, distance_positive, distance_negative = contrastive_loss(anchor, positive_tokens, negative_tokens)
                     distance_normalize_parameter = len(distance_positive) + len(distance_negative)
-                    loss_contrastive.append(loss/distance_normalize_parameter)
-                    d_pos.append(distance_positive.sum()/distance_normalize_parameter)
-                    d_neg.append(distance_negative.sum()/distance_normalize_parameter)
-            loss_fct = nn.CrossEntropyLoss(ignore_index=1, reduction='mean')
-            mlm_loss.append(loss_fct(prediction_scores[i].view(-1, self.config.vocab_size), labels[i].view(-1)))
-       
-        positive_tokens_dict = {k:v for k,v in positive_tokens_dict.items() if v}
-        positive_distance = sum(d_pos)/sequence_output.shape[0]                     ### Normalize with batch size 
-        negative_distance = sum(d_neg)/sequence_output.shape[0]
-        mlm_loss_normalized = sum(mlm_loss)/sequence_output.shape[0]
-        loss_contrastive_normalized = sum(loss_contrastive)/sequence_output.shape[0]
-     
+                    loss_contrastive += loss/distance_normalize_parameter
+                    d_pos += (distance_positive.sum()/distance_normalize_parameter)
+                    d_neg += (distance_negative.sum()/distance_normalize_parameter)
+            else:
+                for p in negative_anchors:                                                ### iterate over placeholders belonging to negative classes
+                    negative_tokens_mask = (tagged[i] == p)                               ### Generate mask for negative placeholder 
+                    negative_tokens_mask_expanded = negative_tokens_mask.unsqueeze(-1).expand_as(sequence_output[i])      
+                    negative_tokens = sequence_output[i][negative_tokens_mask_expanded].view(-1, 768)    ### [Ne, E] #Get tokens belonging to negtive class
+
+                    if negative_tokens.shape[0] != 0 and positive_tokens.shape[0] != 0:
+                        loss, distance_positive, distance_negative = contrastive_loss(anchor, positive_tokens, negative_tokens)
+                        distance_normalize_parameter = len(distance_positive) + len(distance_negative)
+                        loss_contrastive += loss/distance_normalize_parameter
+                        d_pos += (distance_positive.sum()/distance_normalize_parameter)
+                        d_neg += (distance_negative.sum()/distance_normalize_parameter)
+
+            mlm_loss += self.loss(prediction_scores[i].view(-1, self.config.vocab_size), labels[i].view(-1))
+
+        positive_distance = d_pos/sequence_output.shape[0]                               ### Normalize with batch size 
+        negative_distance = d_neg/sequence_output.shape[0]
+        mlm_loss_normalized = mlm_loss/sequence_output.shape[0]
+        loss_contrastive_normalized = loss_contrastive/sequence_output.shape[0]
+
         mlm_loss_normalized = (1-lamda)*mlm_loss_normalized   
         loss_contrastive_normalized = lamda*loss_contrastive_normalized
 
-        masked_lm_loss = None
         loss_total = None
 
         if labels is not None:
@@ -185,8 +186,6 @@ class roberta_mlm(RobertaPreTrainedModel):
             "positive_similarity": positive_distance,
             "negative_similarity": negative_distance,
             "mlm_loss": mlm_loss_normalized,
-            "positive_tokens_dict": positive_tokens_dict,
-            "anchors_dict": anchors_dict,
             "logits": prediction_scores,
             }
 
