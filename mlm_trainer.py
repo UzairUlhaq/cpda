@@ -88,7 +88,7 @@ id2label =  {id: tag for tag, id in label2id.items()}
 entities = [x[2:] for x in label_list[1:]]
 entities = sorted(set(entities), key=entities.index)
 prompt = [f'<{x}>' for x in entities]
-print(prompt)
+print('Prompt Tokens ....', prompt)
 
 
 # Define TOKENIZER
@@ -191,8 +191,6 @@ for epoch in range(num_train_epochs):
         positive_loss_train += outputs['positive_similarity']
         negative_loss_train += outputs['negative_similarity']
         mlm_loss_train += outputs['mlm_loss']
-        embeddings_raw.append(outputs['positive_tokens_dict'])
-        anchors.append(outputs['anchors_dict'])
         optimizer.step()
         lr_scheduler.step()
 
@@ -238,7 +236,6 @@ for epoch in range(num_train_epochs):
                     })
 
     if args.logger=='True':
-
          wandb.log({
                     "epoch": epoch,
                     })
