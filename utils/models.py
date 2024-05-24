@@ -112,62 +112,73 @@ class roberta_mlm(RobertaPreTrainedModel):
             return_dict=return_dict,
         )
 
-        sequence_output = outputs[0]                             ### [bz, N, 768]
+        sequence_output = outputs[0]                                                    ### [bz, N, 768]
         prediction_scores = self.lm_head(sequence_output)
 
-        loss_cumulative = 0
-        prompts = self.prompt                                 
+        if is_eval:                                                                     ### For Generation Only
+            return {
+            "logits": prediction_scores,
+            }
+
         # Initialize losses
         contrastive_loss = ContrastiveLoss()        
+        loss_cumulative = 0
         loss_contrastive = 0
         mlm_loss = 0
         d_pos = 0
         d_neg = 0
 
-        for i in range(sequence_output.shape[0]):                                         ### iterate over each sentence to get ancor, positve tokens and negative tokens to calculate loss
+        for i in range(sequence_output.shape[0]):                                         ### iterate over each sentence to get anchor, positve tokens and negative tokens to calculate loss
             sequence_normalize_parameter = sum(attention_mask[i])                         ### +ve number           
-            prompt_id = input_ids[i][1].item()
-
-            if prompt_id not in prompts:
+            prompt_id = input_ids[i][1].item()                                            ### extract prompt token which is '[CLS] [Prompt_ID] [Sentence] [SEP]'
+            if prompt_id not in self.prompt:                                              ### If sequence doesnot have any class then calculate mlm loss only
                 mlm_loss += self.loss(prediction_scores[i].view(-1, self.config.vocab_size), labels[i].view(-1))
                 continue  
 
-            anchor = sequence_output[i][input_ids[i].eq(prompt_id)]                   ### [1, E]
+            anchor = sequence_output[i][input_ids[i].eq(prompt_id)]                       ### [1, E]
             positive_tokens_mask = (tagged[i] == prompt_id) 
             positive_tokens_mask_expanded = positive_tokens_mask.unsqueeze(-1).expand_as(sequence_output[i])         ### [1, N, E]         
-            positive_tokens = sequence_output[i][positive_tokens_mask_expanded].view(-1, 768)    ### [Np, E] #Get tokens belonging to positive class
-            negative_anchors = list(set(prompts)-set([prompt_id]))                    ### select one placeholder at time to calculate loss
-
-            if len(self.prompt)==1:
-                negative_tokens_mask = (tagged[i] != prompt_id)                               ### Generate mask for negative placeholder 
+            positive_tokens = sequence_output[i][positive_tokens_mask_expanded].view(-1, 768)                        ### [N, E] #Get tokens belonging to positive class
+            negative_anchors = list(set(self.prompt)-set([prompt_id]))                                                   ### select one placeholder at time to calculate loss
+            ####  If dataset has only one CLASS ### 
+          
+            if len(self.prompt)==1: 
+                negative_tokens_mask = (tagged[i] != prompt_id)                            ### Generate mask for negative placeholder 
                 negative_tokens_mask_expanded = negative_tokens_mask.unsqueeze(-1).expand_as(sequence_output[i])      
                 negative_tokens = sequence_output[i][negative_tokens_mask_expanded].view(-1, 768)    ### [Ne, E] #Get tokens belonging to negtive class
                 entity_length = positive_tokens.shape[0]  ### high == max entity length
+               
+                if negative_tokens.shape[0] < entity_length:
+                    entity_length = entity_length-negative_tokens.shape[0]
+                
                 start_index = torch.randint(low=0, high=negative_tokens.shape[0]-entity_length, size=(1,1)).item()
                 end_index = start_index + entity_length 
                 negative_tokens = negative_tokens[start_index:end_index]
                 if negative_tokens.shape[0] != 0 and positive_tokens.shape[0] != 0:
                     loss, distance_positive, distance_negative = contrastive_loss(anchor, positive_tokens, negative_tokens)
-                    distance_normalize_parameter = len(distance_positive) + len(distance_negative)
-                    loss_contrastive += loss/distance_normalize_parameter
-                    d_pos += (distance_positive.sum()/distance_normalize_parameter)
-                    d_neg += (distance_negative.sum()/distance_normalize_parameter)
-            else:
+                    # distance_normalize_parameter = len(distance_positive) + len(distance_negative)
+                    loss_contrastive += loss#/distance_normalize_parameter
+                    d_pos += (distance_positive.sum())#/distance_normalize_parameter)
+                    d_neg += (distance_negative.sum())#/distance_normalize_parameter)
+
+            #############################################################################################        
+           
+            ####  If dataset have Multiple CLASSES  ###
+            else:     
                 for p in negative_anchors:                                                ### iterate over placeholders belonging to negative classes
                     negative_tokens_mask = (tagged[i] == p)                               ### Generate mask for negative placeholder 
                     negative_tokens_mask_expanded = negative_tokens_mask.unsqueeze(-1).expand_as(sequence_output[i])      
                     negative_tokens = sequence_output[i][negative_tokens_mask_expanded].view(-1, 768)    ### [Ne, E] #Get tokens belonging to negtive class
-
                     if negative_tokens.shape[0] != 0 and positive_tokens.shape[0] != 0:
                         loss, distance_positive, distance_negative = contrastive_loss(anchor, positive_tokens, negative_tokens)
-                        distance_normalize_parameter = len(distance_positive) + len(distance_negative)
-                        loss_contrastive += loss/distance_normalize_parameter
-                        d_pos += (distance_positive.sum()/distance_normalize_parameter)
-                        d_neg += (distance_negative.sum()/distance_normalize_parameter)
+                        # distance_normalize_parameter = len(distance_positive) + len(distance_negative)
+                        loss_contrastive += loss #/distance_normalize_parameter
+                        d_pos += (distance_positive.sum())#/distance_normalize_parameter)
+                        d_neg += (distance_negative.sum())#/distance_normalize_parameter)
 
             mlm_loss += self.loss(prediction_scores[i].view(-1, self.config.vocab_size), labels[i].view(-1))
-
-        positive_distance = d_pos/sequence_output.shape[0]                               ### Normalize with batch size 
+        
+        positive_distance = d_pos/sequence_output.shape[0]                                 ### Normalize with batch size 
         negative_distance = d_neg/sequence_output.shape[0]
         mlm_loss_normalized = mlm_loss/sequence_output.shape[0]
         loss_contrastive_normalized = loss_contrastive/sequence_output.shape[0]
@@ -207,7 +218,6 @@ class RobertaLMHead(nn.Module):
         x = self.decoder(x)
 
         return x
-    
 
 class ContrastiveLoss(nn.Module):
     def __init__(self):
@@ -224,5 +234,6 @@ class ContrastiveLoss(nn.Module):
 
         # Compute loss
         loss = -torch.log(exp_sim_pos.mean() / (exp_sim_pos.mean() + exp_sim_neg.mean()))
+
         return loss, similarity_positive[0], similarity_negative[0]
 

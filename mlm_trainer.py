@@ -63,6 +63,9 @@ device = 'cuda' if cuda.is_available() else "cpu"
 print('Running on ...', device)
 print('Lamda .... ', args.lamda)
 print('Logging....', args.logger)
+print('Dataset....', args.dataset)
+
+
 ##### Set seed for reproducibility
 
 def set_seed(seed):
@@ -98,22 +101,28 @@ tokenizer = AutoTokenizer.from_pretrained(checkpoint, add_prefix_space=True)
 tokenizer.add_tokens(prompt)       
 
 # Load DATASET
+
 dataset_processor = DatasetProcessor(dataset)
 dataset = dataset.map(dataset_processor.add_prompt, fn_kwargs={'id2label': id2label, 'prompt': prompt, 'tokenizer': tokenizer})
 dataset = DatasetProcessor.dataset_extend(dataset)
 
 print('Dataset', dataset)
-# %%
 
-# Define MODEL
+# Add Prompt Tokens to Tokenizer
+
 prompt_mapping = {}
 encodings = []
 for entity in prompt:
     entity_encoding = tokenizer.encode(entity, add_special_tokens=False)
     encodings.append(entity_encoding[0])
 
+# Define MODEL
+
 model = roberta_mlm.from_pretrained(checkpoint, encodings)
-model.resize_token_embeddings(len(tokenizer))
+model.resize_token_embeddings(len(tokenizer))               ### Resize model embeddings 
+
+
+# Define MODEL and Initialize prompt TOKENS
 
 for idx, entity in enumerate(prompt,-len(prompt)):
     entity_encoding = tokenizer.encode(entity, add_special_tokens=False)
@@ -122,14 +131,18 @@ for idx, entity in enumerate(prompt,-len(prompt)):
 
     with torch.no_grad():
         model.roberta.embeddings.word_embeddings.weight[idx, :] += model.roberta.embeddings.word_embeddings.weight[entity_encoding[0], :].clone()    
+
 model.to(device)
 
 
 # TOKENIZE Data
-tokenized = dataset.map(tokenize_and_align_labels, fn_kwargs={'id2label': id2label, 'prompt_mapping': prompt_mapping, 'tokenizer': tokenizer},  batched=True,)
+tokenized = dataset.map(tokenize_and_align_labels, fn_kwargs={'id2label': id2label, 'prompt_mapping': prompt_mapping, 'tokenizer': tokenizer, 'masking_type':'tokens'},  batched=True)
 tokenized.set_format('torch', columns=[
                      "input_ids", "attention_mask", "masked_input_ids", "tagged_sent"])
-# %%
+
+
+# Prepare TRAIN and EVALUATION dataloader
+
 data_collator = DataCollatorForTokenClassification(tokenizer=tokenizer)
 
 
@@ -211,7 +224,7 @@ for epoch in range(num_train_epochs):
     mlm_loss_eval=0
 
     print("Evaluating....")
-    for batch in tqdm(train_dataloader):
+    for batch in tqdm(eval_dataloader):
         batch.to(device)
         input_ids = batch['masked_input_ids']
         labels = batch['input_ids']

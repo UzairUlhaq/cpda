@@ -17,7 +17,9 @@ class DatasetProcessor:
         tagged_sent = tokens.copy()
         tokens_org = []
         ner_tags_org = []
+        masked_tokens_org = []
         masked_ner_tags_org = []
+        tagged_sent_org = []
 
         for idx, (s, l) in enumerate(zip(tokens, labels)):
             if l != 'O':
@@ -30,10 +32,15 @@ class DatasetProcessor:
             tokens_org.append(tokens)
             ner_tags_org.append(ner_tags)
             masked_ner_tags_org.append(ner_tags)  # If there are no tags, masked_sent == tagged_sent
+            masked_tokens_org.append(tokens)
 
         for special_token in special_tokens:
             masked_tokens_temp = [tokenizer.mask_token if token in special_token else token for token in tagged_sent]
             special_token_indexes = [i for i, token in enumerate(masked_tokens_temp) if token == tokenizer.mask_token]
+            masked_tokens = [tokenizer.mask_token if idx in special_token_indexes else word for idx, word in enumerate(tokens)]
+            masked_tokens_temp = [special_token] + masked_tokens
+            masked_tokens_org.append(masked_tokens_temp)
+            
             _masked_ner_tags = [tag if idx in special_token_indexes else 0 for idx, tag in enumerate(ner_tags)]
             _masked_ner_tags = [-100] + _masked_ner_tags
             masked_ner_tags_org.append(_masked_ner_tags)
@@ -44,12 +51,16 @@ class DatasetProcessor:
             tokens_temp = [special_token] + tokens
             tokens_org.append(tokens_temp)
 
+            tagged_sent_org.append(tagged_sent)
+
         examples['tokens'] = tokens_org
         examples['ner_tags'] = ner_tags_org
         examples['masked_ner_tags'] = masked_ner_tags_org
+        examples['masked_tokens_org'] = masked_tokens_org
+        examples['tagged_tokens_org'] = tagged_sent_org
 
         return examples
-    
+
     @staticmethod
     def dataset_extend(dataset):
    
@@ -79,11 +90,11 @@ class DatasetProcessor:
         
         return dataset_dict
 
-
-def tokenize_and_align_labels(examples, tokenizer, id2label, prompt_mapping):
-    tokenized_inputs = tokenizer(
-        examples["tokens"], max_length=128, truncation=True, is_split_into_words=True, padding='max_length')
+def tokenize_and_align_labels(examples, tokenizer, id2label, prompt_mapping, masking_type):
     
+    tokenized_inputs = tokenizer(
+        examples[f"{masking_type}"], max_length=256, truncation=True, is_split_into_words=True, padding='max_length')
+
     labels = []
     masked_input_ids = []
     masked_labels = []
@@ -119,11 +130,10 @@ def tokenize_and_align_labels(examples, tokenizer, id2label, prompt_mapping):
         masked_id = [tokenizer.mask_token_id if m else i.item() for i, m in zip(input_ids, mask)]
         masked_input_ids.append(masked_id) 
         masked_labels.append(masked_label_ids)
-
         tags = [f'<{id2label[x.item()][2:]}>' if x != -100 and x != 0 else "O" for x in label_ids]
         tagged_sent_temp = [prompt_mapping[word] if word in prompt_mapping else 0 for word in tags]
         tagged_sent.append(tagged_sent_temp)
-                
+        
     tokenized_inputs["masked_input_ids"] = torch.tensor(masked_input_ids)
     tokenized_inputs["tagged_sent"] = torch.tensor(tagged_sent)
     
