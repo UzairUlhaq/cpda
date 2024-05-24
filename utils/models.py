@@ -139,7 +139,7 @@ class roberta_mlm(RobertaPreTrainedModel):
             positive_tokens_mask = (tagged[i] == prompt_id) 
             positive_tokens_mask_expanded = positive_tokens_mask.unsqueeze(-1).expand_as(sequence_output[i])         ### [1, N, E]         
             positive_tokens = sequence_output[i][positive_tokens_mask_expanded].view(-1, 768)                        ### [N, E] #Get tokens belonging to positive class
-            negative_anchors = list(set(self.prompt)-set([prompt_id]))                                                   ### select one placeholder at time to calculate loss
+            negative_anchors = list(set(self.prompt)-set([prompt_id]))                                               ### select one placeholder at time to calculate loss
             ####  If dataset has only one CLASS ### 
           
             if len(self.prompt)==1: 
