@@ -40,6 +40,7 @@ parser.add_argument('--checkpoint', type=str, required=True)
 parser.add_argument('--dataset_size', type=int, required=True)
 parser.add_argument('--k', type=int, required=True)
 parser.add_argument('--sampling_size', type=int, required=True)
+parser.add_argument('--sequence_length', type=int, required=True)
 parser.add_argument('--lamda', type=float, required=True)
 parser.add_argument('--project', type=str, required=True)
 parser.add_argument('--jobname', type=str, required=True)
@@ -51,7 +52,7 @@ args = parser.parse_args()
 
 device = 'cuda' if cuda.is_available() else "cpu"
 print('Running on ...', device)
-print('Lamda .... ', args.lamda)
+print('Data Generation .... ')
 print('Dataset....', args.dataset)
 
 ##### Set seed for Reproducibility
@@ -90,8 +91,7 @@ tokenizer.add_tokens(prompt)
 # %%%
 
 dataset_processor = DatasetProcessor(dataset_small)
-dataset = dataset_small.map(dataset_processor.add_prompt, fn_kwargs={'id2label': id2label, 'prompt': prompt, 'tokenizer': tokenizer}, load_from_cache_file=False)
-
+dataset = dataset_small.map(dataset_processor.add_prompt_generate, fn_kwargs={'id2label': id2label, 'prompt': prompt, 'tokenizer': tokenizer}, load_from_cache_file=False)
 # %%%
 
 prompt_mapping = {}
@@ -107,13 +107,12 @@ model.resize_token_embeddings(len(tokenizer))
 model.load_state_dict(torch.load(checkpoint + '/pytorch_model.bin'))
 model.to(device)
 
-tokenized = dataset.map(tokenize_and_align_labels, fn_kwargs={'id2label': id2label, 'prompt_mapping': prompt_mapping, 'tokenizer': tokenizer, 'masking_type': 'masked_tokens_org'},  batched=False, load_from_cache_file=False)
 # %%
 
 def generate_topk(model, tokenized, sampling_size):
-   
+
     model.eval()
-    input_ids = torch.tensor(tokenized['masked_input_ids']).to(device)
+    input_ids = torch.tensor(tokenized['input_ids']).to(device)
     attention_mask = torch.tensor(tokenized['attention_mask']).to(device)
 
     with torch.no_grad():
@@ -135,10 +134,16 @@ for i in range(len(dataset['train'])):
     if dataset['train']['tagged_tokens_org'][i] == []:
         continue
 
-    tokenized_data = tokenized['train'][i]
+    tokenized_data = tokenizer(
+        dataset['train']['masked_tokens_org'][i], max_length=256, truncation=True, is_split_into_words=True, padding='max_length')
+
+    if (len(tokenized_data['input_ids'])) > 50 :
+       continue
+
     tokens_to_replace = generate_topk(model=model, tokenized=tokenized_data, sampling_size=args.sampling_size)
     tokens_to_replace = [[token for token in sentence if token not in prompt] for sentence in tokens_to_replace]
-    selected_tokens = [[sublist[i] for sublist in tokens_to_replace] for i in range(args.k)]  # model probability
+    # selected_tokens = [[sublist[i] for sublist in tokens_to_replace] for i in range(args.k)]  # model probability    
+    selected_tokens = [random.choice(lst) for lst in tokens_to_replace]  #### Uniform Probability
     for k in range(args.k):
         sentence = dataset['train']['tagged_tokens_org'][i][0]
         ner_tags = dataset_small['train']['ner_tags'][i]
@@ -162,7 +167,7 @@ augmented_dataset = Dataset.from_pandas(augmented_dataset)
 dataset = DatasetDict({"train": augmented_dataset,
                        "validation": dataset_small['validation'],
                        "test":dataset_base['test']})
+
 # %%
-breakpoint()
 dataset.save_to_disk(args.path_to_save + args.out_file)
 print("Prompt Augmented Dataset..............", dataset)

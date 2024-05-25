@@ -36,6 +36,7 @@ parser.add_argument('--dataset_size', type=int, required=True)
 parser.add_argument('--lr', type=float, required=True)
 parser.add_argument('--weight_decay', type=float, required=True)
 parser.add_argument('--num_epochs', type=int, required=True)
+parser.add_argument('--sequence_length', type=int, required=True)
 parser.add_argument('--early_stopping_tolerance', type=int, required=True)
 parser.add_argument('--early_stopping_threshold', type=float, required=True)
 parser.add_argument('--jobname', type=str,  required=True)
@@ -64,7 +65,6 @@ print('Running on ...', device)
 print('Lamda .... ', args.lamda)
 print('Logging....', args.logger)
 print('Dataset....', args.dataset)
-
 
 ##### Set seed for reproducibility
 
@@ -136,7 +136,7 @@ model.to(device)
 
 
 # TOKENIZE Data
-tokenized = dataset.map(tokenize_and_align_labels, fn_kwargs={'id2label': id2label, 'prompt_mapping': prompt_mapping, 'tokenizer': tokenizer, 'masking_type':'tokens'},  batched=True)
+tokenized = dataset.map(tokenize_and_align_labels, fn_kwargs={'id2label': id2label, 'sequence_length': args.sequence_length, 'prompt_mapping': prompt_mapping, 'tokenizer': tokenizer, 'masking_type':'tokens'},  batched=True)
 tokenized.set_format('torch', columns=[
                      "input_ids", "attention_mask", "masked_input_ids", "tagged_sent"])
 
@@ -175,7 +175,6 @@ early_stopping = EarlyStopping(tolerance=args.early_stopping_tolerance, min_delt
 
 # %%
 
-val_losses = []
 previous_loss = 0
 
 for epoch in range(num_train_epochs):

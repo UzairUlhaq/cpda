@@ -10,9 +10,6 @@ class DatasetProcessor:
     # @staticmethod
     def add_prompt(self, examples, id2label, prompt, tokenizer):
         tokens, ner_tags = examples['tokens'], examples['ner_tags']
-        label_list = self.dataset['train'].features['ner_tags'].feature.names
-        label2id = {tag: id for id, tag in enumerate(label_list)}     
-        id2label =  {id: tag for tag, id in label2id.items()}
         labels = [id2label[x] for x in ner_tags]
         tagged_sent = tokens.copy()
         tokens_org = []
@@ -61,6 +58,39 @@ class DatasetProcessor:
 
         return examples
 
+    def add_prompt_generate(self, examples, id2label, prompt, tokenizer):
+        tokens, ner_tags = examples['tokens'], examples['ner_tags']
+        labels = [id2label[x] for x in ner_tags]
+        tagged_sent_org = []
+        tokens_prompt = []
+        masked_tokens_org = []
+        ner_tags_prompt = []
+        masked_ner_tags = []
+    
+        for idx, (s, l, n) in enumerate(zip(tokens, labels, ner_tags)):
+            tagged_sent = tokens.copy()
+            if l != 'O':
+                tagged_sent[idx] = f'<{l[2:]}>'
+                tagged_sent_org.append(tagged_sent)
+                _tokens = [f'<{l[2:]}>'] + tokens
+                tokens_prompt.append(tokens)
+                ner_tags_prompt = [-100] + ner_tags
+                _masked_tokens = [tokenizer.mask_token if token in prompt else token for idx, token in enumerate(tagged_sent)]
+                _masked_tokens = [f'<{l[2:]}>'] + _masked_tokens
+                masked_tokens_org.append(_masked_tokens)
+                masked_ner_tags.append(ner_tags_prompt)    
+    
+        examples.update({
+            'tokens': tokens_prompt,
+            'ner_tags': ner_tags_prompt,
+            'masked_tokens_org': masked_tokens_org,
+            'tagged_tokens_org': tagged_sent_org,
+            'masked_ner_tags': masked_ner_tags
+        })
+    
+        return examples
+       
+
     @staticmethod
     def dataset_extend(dataset):
    
@@ -90,10 +120,10 @@ class DatasetProcessor:
         
         return dataset_dict
 
-def tokenize_and_align_labels(examples, tokenizer, id2label, prompt_mapping, masking_type):
+def tokenize_and_align_labels(examples, tokenizer, id2label, prompt_mapping, masking_type, sequence_length):
     
     tokenized_inputs = tokenizer(
-        examples[f"{masking_type}"], max_length=256, truncation=True, is_split_into_words=True, padding='max_length')
+        examples[f"{masking_type}"], max_length=sequence_length, truncation=True, is_split_into_words=True, padding='max_length')
 
     labels = []
     masked_input_ids = []
