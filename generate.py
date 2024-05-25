@@ -1,6 +1,3 @@
-
-# %%
-
 import random
 import torch
 from torch import cuda
@@ -103,7 +100,6 @@ for entity in prompt:
 
 model = roberta_mlm.from_pretrained(checkpoint, encodings)
 model.resize_token_embeddings(len(tokenizer))
-
 model.load_state_dict(torch.load(checkpoint + '/pytorch_model.bin'))
 model.to(device)
 
@@ -147,18 +143,15 @@ for i in range(len(dataset['train'])):
     for k in range(args.k):
         sentence = dataset['train']['tagged_tokens_org'][i][0]
         ner_tags = dataset_small['train']['ner_tags'][i]
-        special_token_indexes = [i for i, token in enumerate(sentence) if token in prompt]
-        selected_tokens_ = selected_tokens[k]
-        for index, replacement in zip(special_token_indexes, selected_tokens_):
+        special_token_indexes = [i for i, token in enumerate(ner_tags) if token !=0 ]
+        for index, replacement in zip(special_token_indexes, selected_tokens):
             sentence[index] = replacement
 
         assert len(sentence) == len(ner_tags)
 
-        augmentated_sentences.append(sentence.copy())  
+        augmentated_sentences.append(sentence)  
         augmented_ner_tags.append(ner_tags)
-
 # %%
-
 augmented_dataset = pd.DataFrame({"tokens":augmentated_sentences+dataset_small['train']['tokens'], "ner_tags":augmented_ner_tags+dataset_small['train']['ner_tags']})
 augmented_dataset = Dataset.from_pandas(augmented_dataset)
 
@@ -169,5 +162,6 @@ dataset = DatasetDict({"train": augmented_dataset,
                        "test":dataset_base['test']})
 
 # %%
+breakpoint()
 dataset.save_to_disk(args.path_to_save + args.out_file)
 print("Prompt Augmented Dataset..............", dataset)
