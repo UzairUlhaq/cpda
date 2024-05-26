@@ -2,6 +2,7 @@
 import pandas as pd
 from datasets import load_dataset, load_from_disk, Dataset, DatasetDict, concatenate_datasets
 import torch
+import random
 
 class DatasetProcessor:
     def __init__(self, dataset):
@@ -89,7 +90,21 @@ class DatasetProcessor:
         })
     
         return examples
-       
+
+    @staticmethod
+    def mask_context_tokens(tokens, ner_tags, masking_rate, tokenizer):
+        masked_sent = tokens.copy()
+        # Calculate the number of tokens to mask (30% of the length of the sentence)
+        length_sentence = len(masked_sent)
+        num_tokens_to_mask = int(masking_rate * length_sentence)
+        # Randomly select indices to mask
+        indices_to_mask = random.sample(range(length_sentence), num_tokens_to_mask)
+        # Mask selected indices
+        for i in indices_to_mask:
+            if ner_tags[i] == 0: 
+                masked_sent[i] = tokenizer.mask_token
+
+        return masked_sent
 
     @staticmethod
     def dataset_extend(dataset):
