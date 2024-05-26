@@ -103,6 +103,11 @@ model.resize_token_embeddings(len(tokenizer))
 model.load_state_dict(torch.load(checkpoint + '/pytorch_model.bin'))
 model.to(device)
 
+model_context = AutoModelForMaskedLM.from_pretrained(args.model)
+model_context.to(device)
+model_context.eval()
+
+
 # %%
 
 def generate_topk(model, tokenized, sampling_size):
@@ -112,7 +117,7 @@ def generate_topk(model, tokenized, sampling_size):
     attention_mask = torch.tensor(tokenized['attention_mask']).to(device)
 
     with torch.no_grad():
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask,is_eval=True,  output_attentions=True)
+        outputs = model(input_ids=input_ids, attention_mask=attention_mask,  output_attentions=True)
         logits = outputs['logits']
         top_logits, topk = torch.topk(logits, k=sampling_size, dim=-1)  # get top 5 tokens
         mask = (input_ids==50264)
@@ -122,45 +127,84 @@ def generate_topk(model, tokenized, sampling_size):
     return tokens_to_replace
 
 # %%
-augmentated_sentences = []
-augmented_ner_tags = []
-
-for i in range(len(dataset['train'])):
-    
-    if dataset['train']['tagged_tokens_org'][i] == []:
-        continue
-
-    tokenized_data = tokenizer(
-        dataset['train']['masked_tokens_org'][i], max_length=256, truncation=True, is_split_into_words=True, padding='max_length')
-
-    if (len(tokenized_data['input_ids'])) > 50 :
-       continue
+def aug(model, tokenized, sampling_size, sentence, ner_tags):
 
     tokens_to_replace = generate_topk(model=model, tokenized=tokenized_data, sampling_size=args.sampling_size)
     tokens_to_replace = [[token for token in sentence if token not in prompt] for sentence in tokens_to_replace]
     # selected_tokens = [[sublist[i] for sublist in tokens_to_replace] for i in range(args.k)]  # model probability    
-    selected_tokens = [random.choice(lst) for lst in tokens_to_replace]  #### Uniform Probability
+    augmented_sentences = []
+    augmented_ner_tags  = []
     for k in range(args.k):
-        sentence = dataset['train']['tagged_tokens_org'][i][0]
-        ner_tags = dataset_small['train']['ner_tags'][i]
-        special_token_indexes = [i for i, token in enumerate(ner_tags) if token !=0 ]
+        _sentence  = sentence.copy()
+        _ner_tags  = ner_tags.copy()
+
+        special_token_indexes = [i for i, token in enumerate(_ner_tags) if token !=0 ]
+        selected_tokens = [random.choice(lst) for lst in tokens_to_replace]  #### Uniform Probability
+
         for index, replacement in zip(special_token_indexes, selected_tokens):
-            sentence[index] = replacement
+            _sentence[index] = replacement
 
-        assert len(sentence) == len(ner_tags)
+        augmented_sentences.append(_sentence)
+        augmented_ner_tags.append(_ner_tags)
+        assert len(_sentence) == len(_ner_tags)
 
-        augmentated_sentences.append(sentence)  
-        augmented_ner_tags.append(ner_tags)
-# %%
+    return augmented_sentences, augmented_ner_tags
+
+def context_aug(tokens, ner_tags, masking_rate):
+    masked_sent = tokens.copy()
+    # Calculate the number of tokens to mask (30% of the length of the sentence)
+    length_sentence = len(masked_sent)
+    num_tokens_to_mask = int(masking_rate * length_sentence)
+    # Randomly select indices to mask
+    indices_to_mask = random.sample(range(length_sentence), num_tokens_to_mask)
+    # Mask selected indices
+    for i in indices_to_mask:
+        if ner_tags[i] == 0: 
+            masked_sent[i] = tokenizer.mask_token
+
+    return masked_sent
+
+augmentated_sentences = []
+augmented_ner_tags = []
+
+for i in range(len(dataset['train'])):
+    _tokens, _ner_tags = dataset_small['train']['tokens'], dataset_small['train']['ner_tags']
+
+    tokens = _tokens[i]
+    ner_tags = _ner_tags[i]
+
+    if dataset['train']['tagged_tokens_org'][i] == []:
+
+        masked_context = context_aug(tokens=tokens, ner_tags=ner_tags, masking_rate=0.3)
+        tokenized_data = tokenizer(
+            [masked_context], max_length=256, truncation=True, is_split_into_words=True, padding='max_length')
+    
+        ner_tags_context = [30 if token == '<mask>' else 0 for token in masked_context]
+       
+        sentence_context, ner_tags = aug(model=model_context, tokenized=tokenized_data, sampling_size=args.sampling_size, sentence=tokens, ner_tags=ner_tags_context)    
+        augmentated_sentences.extend(sentence_context)  
+        augmented_ner_tags.extend(ner_tags)
+        continue
+
+    tokenized_data = tokenizer(
+         dataset['train']['masked_tokens_org'][i], max_length=256, truncation=True, is_split_into_words=True, padding='max_length')
+
+    sentence, ner_tags = aug(model=model, tokenized=tokenized_data, sampling_size=args.sampling_size, sentence=tokens, ner_tags=ner_tags)    
+
+    augmentated_sentences.extend(sentence)  
+    augmented_ner_tags.extend(ner_tags)
+
+# # %%
 augmented_dataset = pd.DataFrame({"tokens":augmentated_sentences+dataset_small['train']['tokens'], "ner_tags":augmented_ner_tags+dataset_small['train']['ner_tags']})
 augmented_dataset = Dataset.from_pandas(augmented_dataset)
 
-# %%
+# # %%
 
 dataset = DatasetDict({"train": augmented_dataset,
                        "validation": dataset_small['validation'],
                        "test":dataset_base['test']})
 
 # %%
+breakpoint()
 dataset.save_to_disk(args.path_to_save + args.out_file)
 print("Prompt Augmented Dataset..............", dataset)

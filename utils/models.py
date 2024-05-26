@@ -115,7 +115,7 @@ class roberta_mlm(RobertaPreTrainedModel):
         sequence_output = outputs[0]                                                    ### [bz, N, 768]
         prediction_scores = self.lm_head(sequence_output)
 
-        if is_eval:                                                                     ### For Generation Only
+        if labels is None:                                                                     ### For Generation Only
             return {
             "logits": prediction_scores,
             }
