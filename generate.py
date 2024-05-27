@@ -132,7 +132,7 @@ def generate_topk(model, tokenized, sampling_size):
 
 # %%
 
-def augmentation(model, tokenized, sampling_size, sentence, ner_tags):
+def augmentation(model, tokenized, sampling_size, sentence, ner_tags, ner_tags_masked):
 
     tokens_to_replace = generate_topk(model=model, tokenized=tokenized_data, sampling_size=args.sampling_size)
     tokens_to_replace = [[token for token in sentence if token not in prompt] for sentence in tokens_to_replace]
@@ -140,10 +140,11 @@ def augmentation(model, tokenized, sampling_size, sentence, ner_tags):
     augmented_sentences = []
     augmented_ner_tags  = []
     for k in range(args.k):
-        _sentence  = sentence.copy()
-        _ner_tags  = ner_tags.copy()
+        _sentence = sentence.copy()
+        _ner_tags = ner_tags.copy()
+        _ner_tags_masked = ner_tags_masked.copy()
 
-        special_token_indexes = [i for i, token in enumerate(_ner_tags) if token !=0 ]
+        special_token_indexes = [i for i, token in enumerate(_ner_tags_masked) if token !=0 ]
         selected_tokens = [random.choice(lst) for lst in tokens_to_replace]  #### Uniform Probability
 
         for index, replacement in zip(special_token_indexes, selected_tokens):
@@ -160,11 +161,14 @@ augmented_ner_tags = []
 
 for i in range(len(dataset['train'])):
     
+    if len(dataset['train']['masked_tokens_org'][i]) > 50:   #### Hack to bypass sentences with exceptionally long entities (like in skillspan a sentence with 79 tokens long entitiy)
+        continue
+
     _tokens, _ner_tags = dataset_small['train']['tokens'], dataset_small['train']['ner_tags']
     
     tokens = _tokens[i]
     ner_tags = _ner_tags[i]
-
+    
     if dataset['train']['tagged_tokens_org'][i] == []:
         if  args.context_augmentation == 'True':
             masked_context = dataset_processor.mask_context_tokens(tokens=tokens, ner_tags=ner_tags, masking_rate=0.3, tokenizer=tokenizer)
@@ -172,12 +176,11 @@ for i in range(len(dataset['train'])):
             tokenized_data = tokenizer(
                 [masked_context], max_length=args.sequence_length, truncation=True, is_split_into_words=True, padding='max_length')
 
-            ner_tags_context = [30 if token == '<mask>' else 0 for token in masked_context]
+            ner_tags_masked = [30 if token == '<mask>' else 0 for token in masked_context]
 
-            sentence_context, ner_tags = augmentation(model=model_context, tokenized=tokenized_data, sampling_size=args.sampling_size, sentence=tokens, ner_tags=ner_tags_context)    
-            augmentated_sentences.extend(sentence_context)  
-            augmented_ner_tags.extend(ner_tags)
-
+            sentence_context_augmented, ner_tags_context_augmented = augmentation(model=model_context, tokenized=tokenized_data, sampling_size=args.sampling_size, sentence=tokens, ner_tags=ner_tags, ner_tags_masked=ner_tags_masked)    
+            augmentated_sentences.extend(sentence_context_augmented)  
+            augmented_ner_tags.extend(ner_tags_context_augmented)
             continue
 
         else:
@@ -186,13 +189,12 @@ for i in range(len(dataset['train'])):
     tokenized_data = tokenizer(
          dataset['train']['masked_tokens_org'][i], max_length=args.sequence_length, truncation=True, is_split_into_words=True, padding='max_length')
 
-    sentence, ner_tags = augmentation(model=model, tokenized=tokenized_data, sampling_size=args.sampling_size, sentence=tokens, ner_tags=ner_tags)    
-
+    sentence, ner_tags = augmentation(model=model, tokenized=tokenized_data, sampling_size=args.sampling_size, sentence=tokens, ner_tags=ner_tags, ner_tags_masked=ner_tags)    
+    
     augmentated_sentences.extend(sentence)  
     augmented_ner_tags.extend(ner_tags)
 
 # %%
-
 augmented_dataset = pd.DataFrame({"tokens":augmentated_sentences+dataset_small['train']['tokens'], "ner_tags":augmented_ner_tags+dataset_small['train']['ner_tags']})
 augmented_dataset = Dataset.from_pandas(augmented_dataset)
 
