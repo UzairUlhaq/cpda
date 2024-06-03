@@ -34,7 +34,6 @@ class model_baseline(PreTrainedModel):
        
         sequence_output = outputs[0]
         sequence_output = self.drop_out(sequence_output)
-                
         logits = self.classifier(sequence_output)
 
         loss = None
@@ -42,7 +41,6 @@ class model_baseline(PreTrainedModel):
         if labels is not None:
             loss_func = nn.CrossEntropyLoss(ignore_index=-100)
             loss = loss_func(logits.view(-1, self.num_labels), labels.view(-1))
-
             return TokenClassifierOutput(loss=loss, logits=logits, hidden_states=outputs.hidden_states, attentions=outputs.attentions)
 
 # %%
@@ -112,7 +110,7 @@ class roberta_mlm(RobertaPreTrainedModel):
             return_dict=return_dict,
         )
 
-        sequence_output = outputs[0]                                                    ### [bz, N, 768]
+        sequence_output = outputs[0]                                                           ### [bz, N, 768]
         prediction_scores = self.lm_head(sequence_output)
 
         if labels is None:                                                                     ### For Generation Only
@@ -156,10 +154,10 @@ class roberta_mlm(RobertaPreTrainedModel):
                 negative_tokens = negative_tokens[start_index:end_index]
                 if negative_tokens.shape[0] != 0 and positive_tokens.shape[0] != 0:
                     loss, distance_positive, distance_negative = contrastive_loss(anchor, positive_tokens, negative_tokens)
-                    # distance_normalize_parameter = len(distance_positive) + len(distance_negative)
-                    loss_contrastive += loss#/distance_normalize_parameter
-                    d_pos += (distance_positive.sum())#/distance_normalize_parameter)
-                    d_neg += (distance_negative.sum())#/distance_normalize_parameter)
+                    distance_normalize_parameter = len(distance_positive) + len(distance_negative)
+                    loss_contrastive += loss/distance_normalize_parameter
+                    d_pos += (distance_positive.sum())/distance_normalize_parameter
+                    d_neg += (distance_negative.sum())/distance_normalize_parameter
 
             #############################################################################################        
            
@@ -171,18 +169,17 @@ class roberta_mlm(RobertaPreTrainedModel):
                     negative_tokens = sequence_output[i][negative_tokens_mask_expanded].view(-1, 768)    ### [Ne, E] #Get tokens belonging to negtive class
                     if negative_tokens.shape[0] != 0 and positive_tokens.shape[0] != 0:
                         loss, distance_positive, distance_negative = contrastive_loss(anchor, positive_tokens, negative_tokens)
-                        # distance_normalize_parameter = len(distance_positive) + len(distance_negative)
-                        loss_contrastive += loss #/distance_normalize_parameter
-                        d_pos += (distance_positive.sum())#/distance_normalize_parameter)
-                        d_neg += (distance_negative.sum())#/distance_normalize_parameter)
+                        distance_normalize_parameter = len(distance_positive) + len(distance_negative)
+                        loss_contrastive += loss /distance_normalize_parameter
+                        d_pos += (distance_positive.sum())/distance_normalize_parameter
+                        d_neg += (distance_negative.sum())/distance_normalize_parameter
 
             mlm_loss += self.loss(prediction_scores[i].view(-1, self.config.vocab_size), labels[i].view(-1))
-        
+
         positive_distance = d_pos/sequence_output.shape[0]                                 ### Normalize with batch size 
         negative_distance = d_neg/sequence_output.shape[0]
         mlm_loss_normalized = mlm_loss/sequence_output.shape[0]
         loss_contrastive_normalized = loss_contrastive/sequence_output.shape[0]
-
         mlm_loss_normalized = (1-lamda)*mlm_loss_normalized   
         loss_contrastive_normalized = lamda*loss_contrastive_normalized
 

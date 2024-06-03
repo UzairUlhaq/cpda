@@ -96,17 +96,13 @@ set_seed(args.seed)
 
 # %%
 
-dataset_ = load_dataset(args.dataset)
-
-label_list = dataset_['train'].features['ner_tags'].feature.names
+dataset = load_dataset(args.dataset)
+label_list = dataset['train'].features['ner_tags'].feature.names
 label2id = {tag: id for id, tag in enumerate(label_list)}     
 id2label =  {id: tag for tag, id in label2id.items()}
 label_names = label_list.copy()
-
-dataset = load_from_disk(path + args.train_data)
-
+# dataset = dataset.shuffle(seed=42)
 print(dataset)
-dataset = dataset.shuffle(seed=42)
 
 # %%
 config = AutoConfig.from_pretrained(checkpoint)
@@ -272,7 +268,7 @@ model.eval()
 
 # %%
 
-test_dataloader = DataLoader(
+test_dataloader5e-5 = DataLoader(
    tokenized['test'] , collate_fn=data_collator, batch_size=32)
 
 for batch in test_dataloader:

@@ -93,7 +93,6 @@ entities = sorted(set(entities), key=entities.index)
 prompt = [f'<{x}>' for x in entities]
 print('Prompt Tokens ....', prompt)
 
-
 # Define TOKENIZER
 
 checkpoint = args.model
@@ -145,7 +144,6 @@ tokenized.set_format('torch', columns=[
 
 data_collator = DataCollatorForTokenClassification(tokenizer=tokenizer)
 
-
 train_dataloader = DataLoader(
     tokenized['train'],
     shuffle=False,
@@ -185,8 +183,6 @@ for epoch in range(num_train_epochs):
     negative_loss_train=0
     contrastive_loss_train=0
     mlm_loss_train=0
-    embeddings_raw = []
-    anchors = []
     print(f"Training Epochs {epoch}....")
     for batch in tqdm(train_dataloader):
         batch.to(device)
