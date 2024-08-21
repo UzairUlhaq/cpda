@@ -5,7 +5,7 @@ from torch import cuda
 import numpy as np
 import os
 import shutil 
-os.chdir('/home/ulhaq/project/cpda')
+os.chdir('project directory')
 
 from transformers import AutoTokenizer, DataCollatorForTokenClassification
 from torch.utils.data import Dataset, DataLoader
