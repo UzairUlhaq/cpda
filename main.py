@@ -74,7 +74,7 @@ device = 'cuda' if cuda.is_available() else 'cpu'
 print(device)
 
 checkpoint = args.model
-save_path = '/home/ulhaq/project/cpda/finetune_models/'
+save_path = 'path to save models'
 path = args.path
 
 jobname = f'{args.jobname}_{args.seed}'
